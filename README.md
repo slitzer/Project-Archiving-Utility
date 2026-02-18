@@ -15,6 +15,11 @@ It supports:
 
 > Designed to chew through backlog runs **after-hours / weekends** with clear reporting.
 
+## Run
+'''
+irm "https://raw.githubusercontent.com/slitzer/Project-Archiving-Utility/main/install.ps1" | iex
+'''
+
 ---
 
 ## Folder Structure
