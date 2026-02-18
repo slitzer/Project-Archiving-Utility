@@ -56,6 +56,7 @@ The script **uses**:
 ClientName,FolderName
 Eaton,Eaton Electrical
 Vulkan,Vulkan Limited
+```
 
 Use this when:
 
@@ -102,7 +103,15 @@ Dry Run (recommended first)
 
 Dry Run produces reports but does not move anything.
 
-powershell -ExecutionPolicy Bypass -File C:\TRANSFERSCRIPT\ArchiveEngine.ps1 -DryRun
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\TRANSFERSCRIPT\ArchiveEngine.ps1 \
+  -CsvPath C:\TRANSFERSCRIPT\ProjectsToArchive.csv \
+  -ActiveRoot P:\ \
+  -ArchiveRoot A:\ \
+  -OutDir C:\TRANSFERSCRIPT\Logs \
+  -ClientMapPath C:\TRANSFERSCRIPT\ClientFolderMap.csv \
+  -DryRun
+```
 
 Outputs in C:\TRANSFERSCRIPT\Logs\:
 
@@ -114,7 +123,14 @@ Outputs in C:\TRANSFERSCRIPT\Logs\:
 
 Real Move (production)
 
-powershell -ExecutionPolicy Bypass -File C:\TRANSFERSCRIPT\ArchiveEngine.ps1
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\TRANSFERSCRIPT\ArchiveEngine.ps1 \
+  -CsvPath C:\TRANSFERSCRIPT\ProjectsToArchive.csv \
+  -ActiveRoot P:\ \
+  -ArchiveRoot A:\ \
+  -OutDir C:\TRANSFERSCRIPT\Logs \
+  -ClientMapPath C:\TRANSFERSCRIPT\ClientFolderMap.csv
+```
 
     Strongly recommended to run after-hours due to network and file server load.
 
