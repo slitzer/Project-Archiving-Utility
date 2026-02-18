@@ -38,6 +38,7 @@ $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $logPath      = Join-Path $OutDir "ArchiveMove-$stamp.log"
 $wouldMoveCsv = Join-Path $OutDir "WouldMove-$stamp.csv"
 $skippedCsv   = Join-Path $OutDir "Skipped-$stamp.csv"
+$failedCsv    = Join-Path $OutDir "Failed-$stamp.csv"
 
 "=== Run started: $(Get-Date) ===" | Out-File $logPath -Append
 "DryRun: $DryRun" | Out-File $logPath -Append
@@ -77,12 +78,14 @@ $activeClientFolders = Get-ChildItem -Path $ActiveRoot -ErrorAction Stop | Where
 # Results
 $wouldMove = @()
 $skipped   = @()
+$failed    = @()
 
 $summary = [ordered]@{
     TotalRows              = 0
     WouldMoveCount         = 0
     MovedCount             = 0
     Skipped_DestExists     = 0
+    Skipped_MissingFields  = 0
     Skipped_MissingClient  = 0
     Skipped_MissingJob     = 0
     Skipped_Ambiguous      = 0
@@ -97,6 +100,7 @@ foreach ($r in $rows) {
     $clientName    = Get-FieldString $r "Client Name"
 
     if (-not $projectNumber -or -not $clientName) {
+        $summary.Skipped_MissingFields++
         $skipped += [pscustomobject]@{
             ClientName    = $clientName
             ClientFolder  = ""
@@ -268,22 +272,40 @@ foreach ($r in $rows) {
 
     $p = Start-Process -FilePath robocopy.exe -ArgumentList $args -Wait -PassThru
     $rc = $p.ExitCode
-    if ($rc -ge 8) { $summary.Failed_Robocopy++ } else { $summary.MovedCount++ }
+    if ($rc -ge 8) {
+        $summary.Failed_Robocopy++
+        $failed += [pscustomobject]@{
+            ClientName    = $clientName
+            ClientFolder  = $clientFolderName
+            ProjectNumber = $projectNumber
+            ProjectTitle  = $projectTitle
+            JobFolder     = $jobFolder.Name
+            SourcePath    = $src
+            DestPath      = $dst
+            ExitCode      = $rc
+            FailReason    = "Robocopy failed (exit code >= 8)"
+        }
+        "FAILED|ProjectNumber=$projectNumber|Client=$clientName|Source=$src|Dest=$dst|RobocopyExit=$rc" | Out-File $logPath -Append
+    } else {
+        $summary.MovedCount++
+    }
 }
 
 # Export reports
 $wouldMove | Export-Csv -NoTypeInformation -Encoding UTF8 $wouldMoveCsv
 $skipped   | Export-Csv -NoTypeInformation -Encoding UTF8 $skippedCsv
+$failed    | Export-Csv -NoTypeInformation -Encoding UTF8 $failedCsv
 
 "=== Summary ===" | Out-File $logPath -Append
 $summary.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" | Out-File $logPath -Append }
 "WouldMove report: $wouldMoveCsv" | Out-File $logPath -Append
 "Skipped report: $skippedCsv" | Out-File $logPath -Append
+"Failed report: $failedCsv" | Out-File $logPath -Append
 "=== Run ended: $(Get-Date) ===" | Out-File $logPath -Append
 
 # One-line result for the UI to parse
-Write-Host ("RESULT|Log={0}|WouldMove={1}|Skipped={2}|Total={3}|WouldMoveCount={4}|Moved={5}|SkippedAmb={6}|SkippedMissClient={7}|SkippedMissJob={8}|SkippedDest={9}|Failed={10}" -f `
-    $logPath, $wouldMoveCsv, $skippedCsv, `
+Write-Host ("RESULT|Log={0}|WouldMove={1}|Skipped={2}|FailedCsv={3}|Total={4}|WouldMoveCount={5}|Moved={6}|SkippedAmb={7}|SkippedMissClient={8}|SkippedMissJob={9}|SkippedDest={10}|SkippedMissingFields={11}|Failed={12}" -f `
+    $logPath, $wouldMoveCsv, $skippedCsv, $failedCsv, `
     $summary.TotalRows, $summary.WouldMoveCount, $summary.MovedCount, `
-    $summary.Skipped_Ambiguous, $summary.Skipped_MissingClient, $summary.Skipped_MissingJob, $summary.Skipped_DestExists, $summary.Failed_Robocopy
+    $summary.Skipped_Ambiguous, $summary.Skipped_MissingClient, $summary.Skipped_MissingJob, $summary.Skipped_DestExists, $summary.Skipped_MissingFields, $summary.Failed_Robocopy
 )
