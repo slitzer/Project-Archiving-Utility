@@ -5,7 +5,10 @@ Add-Type -AssemblyName System.Windows.Forms
 # -------------------------
 # CONFIG DEFAULTS
 # -------------------------
-$script:EnginePath = "C:\TRANSFERSCRIPT\ArchiveEngine.ps1"
+$script:EnginePath = Join-Path $PSScriptRoot "ArchiveEngine.ps1"
+if (!(Test-Path $script:EnginePath)) {
+    $script:EnginePath = "C:\TRANSFERSCRIPT\ArchiveEngine.ps1"
+}
 
 $script:LastWouldMovePath = $null
 $script:LastSkippedPath   = $null
