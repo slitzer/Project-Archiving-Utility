@@ -29,6 +29,36 @@ function Normalize-ClientName {
     $x = $x -replace '\s+', ' '
     return $x.Trim()
 }
+function Get-FolderSizeBytes {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return [int64]0 }
+
+    $sum = (Get-ChildItem -Path $Path -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Measure-Object -Property Length -Sum).Sum
+
+    if ($null -eq $sum) { return [int64]0 }
+    return [int64]$sum
+}
+function Get-DestinationFreeBytes {
+    param([string]$Path)
+
+    try {
+        $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+        if ($item.PSDrive -and $null -ne $item.PSDrive.Free) {
+            return [int64]$item.PSDrive.Free
+        }
+    } catch {}
+
+    if ($Path -match '^[A-Za-z]:') {
+        try {
+            $driveRoot = $Path.Substring(0,1) + ':'
+            $driveInfo = New-Object System.IO.DriveInfo($driveRoot)
+            return [int64]$driveInfo.AvailableFreeSpace
+        } catch {}
+    }
+
+    return $null
+}
 
 # =========================
 # OUTPUT SETUP
@@ -90,6 +120,8 @@ $summary = [ordered]@{
     Skipped_MissingJob     = 0
     Skipped_Ambiguous      = 0
     Failed_Robocopy        = 0
+    SpaceCheck_Performed   = 0
+    SpaceCheck_Insufficient = 0
 }
 
 foreach ($r in $rows) {
@@ -248,46 +280,76 @@ foreach ($r in $rows) {
         JobFolder     = $jobFolder.Name
         SourcePath    = $src
         DestPath      = $dst
+        SourceSizeBytes = 0
         Action        = $(if ($DryRun) { "WouldMove" } else { "Move" })
         WouldCreate   = $(if (!(Test-Path $archiveClientPath)) { "Create archive client folder" } else { "" })
     }
     $summary.WouldMoveCount++
+}
 
-    if ($DryRun) { continue }
+# Dry-run based capacity check
+$totalWouldMoveBytes = [int64]0
+foreach ($m in $wouldMove) {
+    $sizeBytes = Get-FolderSizeBytes -Path $m.SourcePath
+    $m.SourceSizeBytes = $sizeBytes
+    $totalWouldMoveBytes += $sizeBytes
+}
 
-    # Real run: create client folder if needed
-    Ensure-Dir $archiveClientPath
+$destinationFreeBytes = Get-DestinationFreeBytes -Path $ArchiveRoot
+$insufficientSpace = $false
+if ($null -ne $destinationFreeBytes) {
+    $summary.SpaceCheck_Performed = 1
+    if ($totalWouldMoveBytes -gt $destinationFreeBytes) {
+        $summary.SpaceCheck_Insufficient = 1
+        $insufficientSpace = $true
+    }
+}
 
-    # Move via robocopy
-    $args = @(
-        "`"$src`"",
-        "`"$dst`"",
-        "/E",
-        "/MOVE",
-        "/R:2","/W:5",
-        "/COPY:DAT","/DCOPY:DAT",
-        "/XJ",
-        "/NP"
-    )
+"=== Capacity check ===" | Out-File $logPath -Append
+"TotalWouldMoveBytes: $totalWouldMoveBytes" | Out-File $logPath -Append
+"DestinationFreeBytes: $destinationFreeBytes" | Out-File $logPath -Append
+"InsufficientSpace: $insufficientSpace" | Out-File $logPath -Append
 
-    $p = Start-Process -FilePath robocopy.exe -ArgumentList $args -Wait -PassThru
-    $rc = $p.ExitCode
-    if ($rc -ge 8) {
-        $summary.Failed_Robocopy++
-        $failed += [pscustomobject]@{
-            ClientName    = $clientName
-            ClientFolder  = $clientFolderName
-            ProjectNumber = $projectNumber
-            ProjectTitle  = $projectTitle
-            JobFolder     = $jobFolder.Name
-            SourcePath    = $src
-            DestPath      = $dst
-            ExitCode      = $rc
-            FailReason    = "Robocopy failed (exit code >= 8)"
+if ($insufficientSpace -and -not $DryRun) {
+    "ALERT|Insufficient destination space. Required=$totalWouldMoveBytes bytes, Free=$destinationFreeBytes bytes. Move aborted." | Out-File $logPath -Append
+} elseif (-not $DryRun) {
+    foreach ($m in $wouldMove) {
+        $archiveClientPath = Split-Path -Parent $m.DestPath
+
+        # Real run: create client folder if needed
+        Ensure-Dir $archiveClientPath
+
+        # Move via robocopy
+        $args = @(
+            "`"$($m.SourcePath)`"",
+            "`"$($m.DestPath)`"",
+            "/E",
+            "/MOVE",
+            "/R:2","/W:5",
+            "/COPY:DAT","/DCOPY:DAT",
+            "/XJ",
+            "/NP"
+        )
+
+        $p = Start-Process -FilePath robocopy.exe -ArgumentList $args -Wait -PassThru
+        $rc = $p.ExitCode
+        if ($rc -ge 8) {
+            $summary.Failed_Robocopy++
+            $failed += [pscustomobject]@{
+                ClientName    = $m.ClientName
+                ClientFolder  = $m.ClientFolder
+                ProjectNumber = $m.ProjectNumber
+                ProjectTitle  = $m.ProjectTitle
+                JobFolder     = $m.JobFolder
+                SourcePath    = $m.SourcePath
+                DestPath      = $m.DestPath
+                ExitCode      = $rc
+                FailReason    = "Robocopy failed (exit code >= 8)"
+            }
+            "FAILED|ProjectNumber=$($m.ProjectNumber)|Client=$($m.ClientName)|Source=$($m.SourcePath)|Dest=$($m.DestPath)|RobocopyExit=$rc" | Out-File $logPath -Append
+        } else {
+            $summary.MovedCount++
         }
-        "FAILED|ProjectNumber=$projectNumber|Client=$clientName|Source=$src|Dest=$dst|RobocopyExit=$rc" | Out-File $logPath -Append
-    } else {
-        $summary.MovedCount++
     }
 }
 
@@ -304,8 +366,9 @@ $summary.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value)" | Out-File 
 "=== Run ended: $(Get-Date) ===" | Out-File $logPath -Append
 
 # One-line result for the UI to parse
-Write-Host ("RESULT|Log={0}|WouldMove={1}|Skipped={2}|FailedCsv={3}|Total={4}|WouldMoveCount={5}|Moved={6}|SkippedAmb={7}|SkippedMissClient={8}|SkippedMissJob={9}|SkippedDest={10}|SkippedMissingFields={11}|Failed={12}" -f `
+Write-Host ("RESULT|Log={0}|WouldMove={1}|Skipped={2}|FailedCsv={3}|Total={4}|WouldMoveCount={5}|Moved={6}|SkippedAmb={7}|SkippedMissClient={8}|SkippedMissJob={9}|SkippedDest={10}|SkippedMissingFields={11}|Failed={12}|SpaceCheckPerformed={13}|SpaceCheckInsufficient={14}|TotalWouldMoveBytes={15}|DestinationFreeBytes={16}" -f `
     $logPath, $wouldMoveCsv, $skippedCsv, $failedCsv, `
     $summary.TotalRows, $summary.WouldMoveCount, $summary.MovedCount, `
-    $summary.Skipped_Ambiguous, $summary.Skipped_MissingClient, $summary.Skipped_MissingJob, $summary.Skipped_DestExists, $summary.Skipped_MissingFields, $summary.Failed_Robocopy
+    $summary.Skipped_Ambiguous, $summary.Skipped_MissingClient, $summary.Skipped_MissingJob, $summary.Skipped_DestExists, $summary.Skipped_MissingFields, $summary.Failed_Robocopy, `
+    $summary.SpaceCheck_Performed, $summary.SpaceCheck_Insufficient, $totalWouldMoveBytes, $destinationFreeBytes
 )
