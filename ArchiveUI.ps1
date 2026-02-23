@@ -104,6 +104,17 @@ function Append-Output([string]$s) {
 }
 
 function Safe-Count($obj) { return @($obj).Count }
+function Format-Bytes([Nullable[Int64]]$bytes) {
+    if ($null -eq $bytes) { return "Unknown" }
+    $units = @("B", "KB", "MB", "GB", "TB")
+    $value = [double]$bytes
+    $idx = 0
+    while ($value -ge 1024 -and $idx -lt ($units.Count - 1)) {
+        $value = $value / 1024
+        $idx++
+    }
+    return ("{0:N2} {1} ({2} bytes)" -f $value, $units[$idx], $bytes)
+}
 
 function Parse-ResultLine([string]$line) {
     # RESULT|Log=...|WouldMove=...|Skipped=...|Total=...|WouldMoveCount=...|Moved=...|SkippedAmb=...|...|Failed=...
@@ -223,6 +234,20 @@ function Run-Engine([bool]$Dry) {
     if ($res.Count -gt 0) {
         Update-CardsFromResult $res
         Refresh-LogsList
+
+        if ($res.ContainsKey("SpaceCheckPerformed") -and $res["SpaceCheckPerformed"] -eq "1") {
+            $needBytes = [int64]$res["TotalWouldMoveBytes"]
+            $freeBytes = [int64]$res["DestinationFreeBytes"]
+            Append-Output ("Capacity check: required=" + (Format-Bytes $needBytes) + ", free=" + (Format-Bytes $freeBytes))
+
+            if ($res.ContainsKey("SpaceCheckInsufficient") -and $res["SpaceCheckInsufficient"] -eq "1") {
+                $msg = "Insufficient destination space detected.`n`nRequired: " + (Format-Bytes $needBytes) + "`nAvailable: " + (Format-Bytes $freeBytes)
+                Append-Output ("ALERT: " + $msg.Replace("`n", " "))
+                [System.Windows.MessageBox]::Show($msg, "Storage Alert", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
+            }
+        } else {
+            Append-Output "Capacity check: destination free space could not be determined."
+        }
     }
 }
 
