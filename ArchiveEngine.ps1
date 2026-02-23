@@ -93,8 +93,29 @@ $rows = @(Import-Csv $CsvPath)
 $clientMap = @{}
 if ($ClientMapPath -and (Test-Path $ClientMapPath)) {
     @(Import-Csv $ClientMapPath) | ForEach-Object {
-        if ($_.ClientName -and $_.FolderName) {
-            $clientMap[$_.ClientName.Trim()] = $_.FolderName.Trim()
+        if ($_.ClientName) {
+            $key = $_.ClientName.Trim()
+            $sourceFolder = ""
+            $destinationFolder = ""
+
+            # Backward compatibility: existing map files can still use FolderName.
+            if ($_.PSObject.Properties.Name -contains "FolderName" -and $_.FolderName) {
+                $sourceFolder = $_.FolderName.Trim()
+                $destinationFolder = $_.FolderName.Trim()
+            }
+            if ($_.PSObject.Properties.Name -contains "SourceFolderName" -and $_.SourceFolderName) {
+                $sourceFolder = $_.SourceFolderName.Trim()
+            }
+            if ($_.PSObject.Properties.Name -contains "DestinationFolderName" -and $_.DestinationFolderName) {
+                $destinationFolder = $_.DestinationFolderName.Trim()
+            }
+
+            if ($sourceFolder -or $destinationFolder) {
+                $clientMap[$key] = [pscustomobject]@{
+                    SourceFolderName      = $sourceFolder
+                    DestinationFolderName = $destinationFolder
+                }
+            }
         }
     }
     "Loaded client mappings: $($clientMap.Count)" | Out-File $logPath -Append
@@ -146,11 +167,21 @@ foreach ($r in $rows) {
         continue
     }
 
-    # Resolve client folder name: mapping first, else best-match
-    $clientFolderName = $null
+    # Resolve source/destination client folder names: mapping first, else best-match
+    $sourceClientFolderName = $null
+    $destinationClientFolderName = $null
 
     if ($clientMap.ContainsKey($clientName)) {
-        $clientFolderName = $clientMap[$clientName]
+        $mapped = $clientMap[$clientName]
+        $sourceClientFolderName = $mapped.SourceFolderName
+        $destinationClientFolderName = $mapped.DestinationFolderName
+
+        if (-not $sourceClientFolderName -and $destinationClientFolderName) {
+            $sourceClientFolderName = $destinationClientFolderName
+        }
+        if (-not $destinationClientFolderName -and $sourceClientFolderName) {
+            $destinationClientFolderName = $sourceClientFolderName
+        }
     } else {
         $target = Normalize-ClientName $clientName
         $tWords = $target.Split(' ') | Where-Object { $_ -ne "" }
@@ -198,17 +229,33 @@ foreach ($r in $rows) {
             continue
         }
 
-        $clientFolderName = $best.Name
+        $sourceClientFolderName = $best.Name
+        $destinationClientFolderName = $best.Name
     }
 
-    $activeClientPath  = Join-Path $ActiveRoot  $clientFolderName
-    $archiveClientPath = Join-Path $ArchiveRoot $clientFolderName
+    if (-not $sourceClientFolderName -or -not $destinationClientFolderName) {
+        $summary.Skipped_MissingClient++
+        $skipped += [pscustomobject]@{
+            ClientName    = $clientName
+            ClientFolder  = ""
+            ProjectNumber = $projectNumber
+            ProjectTitle  = $projectTitle
+            JobFolder     = ""
+            SourcePath    = ""
+            DestPath      = ""
+            SkipReason    = "Client mapping is missing source/destination folder name"
+        }
+        continue
+    }
+
+    $activeClientPath  = Join-Path $ActiveRoot  $sourceClientFolderName
+    $archiveClientPath = Join-Path $ArchiveRoot $destinationClientFolderName
 
     if (!(Test-Path $activeClientPath)) {
         $summary.Skipped_MissingClient++
         $skipped += [pscustomobject]@{
             ClientName    = $clientName
-            ClientFolder  = $clientFolderName
+            ClientFolder  = $sourceClientFolderName
             ProjectNumber = $projectNumber
             ProjectTitle  = $projectTitle
             JobFolder     = ""
@@ -227,7 +274,7 @@ foreach ($r in $rows) {
         $summary.Skipped_MissingJob++
         $skipped += [pscustomobject]@{
             ClientName    = $clientName
-            ClientFolder  = $clientFolderName
+            ClientFolder  = $sourceClientFolderName
             ProjectNumber = $projectNumber
             ProjectTitle  = $projectTitle
             JobFolder     = ""
@@ -242,7 +289,7 @@ foreach ($r in $rows) {
         $summary.Skipped_Ambiguous++
         $skipped += [pscustomobject]@{
             ClientName    = $clientName
-            ClientFolder  = $clientFolderName
+            ClientFolder  = $sourceClientFolderName
             ProjectNumber = $projectNumber
             ProjectTitle  = $projectTitle
             JobFolder     = ""
@@ -261,7 +308,7 @@ foreach ($r in $rows) {
         $summary.Skipped_DestExists++
         $skipped += [pscustomobject]@{
             ClientName    = $clientName
-            ClientFolder  = $clientFolderName
+            ClientFolder  = $sourceClientFolderName
             ProjectNumber = $projectNumber
             ProjectTitle  = $projectTitle
             JobFolder     = $jobFolder.Name
@@ -274,7 +321,7 @@ foreach ($r in $rows) {
 
     $wouldMove += [pscustomobject]@{
         ClientName    = $clientName
-        ClientFolder  = $clientFolderName
+        ClientFolder  = $sourceClientFolderName
         ProjectNumber = $projectNumber
         ProjectTitle  = $projectTitle
         JobFolder     = $jobFolder.Name

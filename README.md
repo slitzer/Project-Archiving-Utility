@@ -58,9 +58,9 @@ The script **uses**:
 `ClientFolderMap.csv` format:
 
 ```csv
-ClientName,FolderName
-Burger King,BK Ltd
-Mad Butcher,Mad Butcher Limited
+ClientName,SourceFolderName,DestinationFolderName
+Burger King,BK Ltd,Burger King Archive
+Mad Butcher,Mad Butcher Limited,Mad Butcher Limited
 ```
 
 Use this when:
@@ -77,7 +77,7 @@ For each row in the Projects CSV:
 
     Determine the client folder in the Active root (P:\ClientFolder)
 
-        Prefer exact mapping from ClientFolderMap.csv
+        Prefer exact mapping from ClientFolderMap.csv (SourceFolderName/DestinationFolderName, with FolderName still supported for backward compatibility)
 
         Otherwise use best-match scoring (normalized name word overlap)
 
@@ -87,13 +87,13 @@ For each row in the Projects CSV:
 
     Create archive folder path if needed:
 
-        A:\ClientFolder\
+        A:\DestinationFolderName\
 
     Move the job folder into archive:
 
-        From: P:\ClientFolder\12345 - ...
+        From: P:\SourceFolderName\12345 - ...
 
-        To: A:\ClientFolder\12345 - ...
+        To: A:\DestinationFolderName\12345 - ...
 
     Log every decision:
 
@@ -186,7 +186,7 @@ Mappings Tab
 
     Shows suggested mappings in a grid
 
-    You can edit the FolderName field
+    You can edit both SourceFolderName and DestinationFolderName fields
 
     Select rows and click Append selected to map
 

@@ -327,6 +327,40 @@ function Normalize-ClientNameLocal {
     return $x.Trim()
 }
 
+function Get-BestFolderSuggestion {
+    param(
+        [string]$ClientName,
+        $Folders
+    )
+
+    if (-not $Folders -or @($Folders).Count -eq 0) {
+        return [pscustomobject]@{ Name = ""; Score = 0; Tie = $false }
+    }
+
+    $target = Normalize-ClientNameLocal $ClientName
+    $tWords = $target.Split(' ') | Where-Object { $_ -ne "" }
+
+    $cand = @()
+    foreach ($f in $Folders) {
+        $norm = Normalize-ClientNameLocal $f.Name
+        if (-not $norm) { continue }
+        $cWords = $norm.Split(' ') | Where-Object { $_ -ne "" }
+        $score = ($tWords | Where-Object { $cWords -contains $_ }).Count
+        $cand += [pscustomobject]@{ Name = $f.Name; Score = $score }
+    }
+
+    $cand = $cand | Sort-Object Score -Descending
+    $best = $cand | Select-Object -First 1
+    $second = $cand | Select-Object -Skip 1 -First 1
+
+    $bestName = $(if ($best -and $best.Score -gt 0) { $best.Name } else { "" })
+    $bestScore = $(if ($best) { [int]$best.Score } else { 0 })
+    $tie = $false
+    if ($second -and $best -and ($second.Score -eq $best.Score) -and $bestScore -gt 0) { $tie = $true }
+
+    return [pscustomobject]@{ Name = $bestName; Score = $bestScore; Tie = $tie }
+}
+
 function Suggest-MappingsFromSkipped {
     $gridMappings.ItemsSource = @()
     $txtMapStatus.Text = ""
@@ -343,53 +377,45 @@ function Suggest-MappingsFromSkipped {
         return
     }
 
+    $to = $txtTo.Text.Trim()
+    if (!(Test-Path $to)) {
+        $txtMapStatus.Text = "Move To root is not accessible (need archive drive mounted)."
+        return
+    }
+
     $activeFolders = @(Get-ChildItem -Path $from -Directory -ErrorAction SilentlyContinue)
     if ($activeFolders.Count -eq 0) {
         $txtMapStatus.Text = "No client folders found under Move From root."
         return
     }
 
+    $archiveFolders = @(Get-ChildItem -Path $to -Directory -ErrorAction SilentlyContinue)
+
     $sk = @(Import-Csv $skPath)
-    # Only things fixable by mapping:
     $needs = @($sk | Where-Object {
         $_.SkipReason -match "No matching client folder" -or $_.SkipReason -match "Ambiguous client folder match"
     })
 
-    # Unique client names
     $uniqClients = @($needs | Select-Object -ExpandProperty ClientName -Unique)
 
     $out = @()
     foreach ($cn in $uniqClients) {
         if ([string]::IsNullOrWhiteSpace($cn)) { continue }
 
-        $target = Normalize-ClientNameLocal $cn
-        $tWords = $target.Split(' ') | Where-Object { $_ -ne "" }
-
-        $cand = @()
-        foreach ($f in $activeFolders) {
-            $norm = Normalize-ClientNameLocal $f.Name
-            if (-not $norm) { continue }
-            $cWords = $norm.Split(' ') | Where-Object { $_ -ne "" }
-            $score = ($tWords | Where-Object { $cWords -contains $_ }).Count
-            $cand += [pscustomobject]@{ Name=$f.Name; Score=$score }
-        }
-
-        $cand = $cand | Sort-Object Score -Descending
-        $best = $cand | Select-Object -First 1
-        $second = $cand | Select-Object -Skip 1 -First 1
-
-        $bestName = $(if ($best -and $best.Score -gt 0) { $best.Name } else { "" })
-        $bestScore = $(if ($best) { [int]$best.Score } else { 0 })
-        $tie = $false
-        if ($second -and $best -and ($second.Score -eq $best.Score) -and $bestScore -gt 0) { $tie = $true }
+        $src = Get-BestFolderSuggestion -ClientName $cn -Folders $activeFolders
+        $dst = Get-BestFolderSuggestion -ClientName $cn -Folders $archiveFolders
 
         $out += [pscustomobject]@{
-            Use            = $(if ($bestName) { $true } else { $false })
-            ClientName      = $cn
-            FolderName      = $bestName  # editable target
-            SuggestedFolder = $bestName
-            Score           = $bestScore
-            AmbiguousTie    = $tie
+            Use                      = $(if ($src.Name -or $dst.Name) { $true } else { $false })
+            ClientName               = $cn
+            SourceFolderName         = $src.Name
+            DestinationFolderName    = $(if ($dst.Name) { $dst.Name } else { $src.Name })
+            SuggestedSourceFolder    = $src.Name
+            SuggestedDestinationFolder = $(if ($dst.Name) { $dst.Name } else { $src.Name })
+            SourceScore              = $src.Score
+            DestinationScore         = $dst.Score
+            SourceTie                = $src.Tie
+            DestinationTie           = $dst.Tie
         }
     }
 
@@ -407,35 +433,71 @@ function Append-MappingsToMap {
     $items = @($gridMappings.ItemsSource)
     if ($items.Count -eq 0) { $txtMapStatus.Text = "No mapping rows loaded."; return }
 
-    $selected = @($items | Where-Object { $_.Use -eq $true -and -not [string]::IsNullOrWhiteSpace($_.FolderName) })
-    if ($selected.Count -eq 0) { $txtMapStatus.Text = "Nothing selected (tick Use and set FolderName)."; return }
+    $selected = @($items | Where-Object {
+        $_.Use -eq $true -and
+        -not [string]::IsNullOrWhiteSpace($_.SourceFolderName) -and
+        -not [string]::IsNullOrWhiteSpace($_.DestinationFolderName)
+    })
+    if ($selected.Count -eq 0) {
+        $txtMapStatus.Text = "Nothing selected (tick Use and set both SourceFolderName and DestinationFolderName)."
+        return
+    }
 
     $overwrite = $chkOverwrite.IsChecked -eq $true
 
-    $existing = @()
     $dict = @{}
     if (Test-Path $mapPath) {
         $existing = @(Import-Csv $mapPath)
         foreach ($e in $existing) {
-            if ($e.ClientName -and $e.FolderName) { $dict[$e.ClientName.Trim()] = $e.FolderName.Trim() }
+            if (-not $e.ClientName) { continue }
+            $key = $e.ClientName.Trim()
+
+            $sourceFolder = ""
+            $destinationFolder = ""
+            if ($e.PSObject.Properties.Name -contains "FolderName" -and $e.FolderName) {
+                $sourceFolder = $e.FolderName.Trim()
+                $destinationFolder = $e.FolderName.Trim()
+            }
+            if ($e.PSObject.Properties.Name -contains "SourceFolderName" -and $e.SourceFolderName) {
+                $sourceFolder = $e.SourceFolderName.Trim()
+            }
+            if ($e.PSObject.Properties.Name -contains "DestinationFolderName" -and $e.DestinationFolderName) {
+                $destinationFolder = $e.DestinationFolderName.Trim()
+            }
+
+            if ($sourceFolder -or $destinationFolder) {
+                if (-not $sourceFolder) { $sourceFolder = $destinationFolder }
+                if (-not $destinationFolder) { $destinationFolder = $sourceFolder }
+                $dict[$key] = [pscustomobject]@{
+                    SourceFolderName = $sourceFolder
+                    DestinationFolderName = $destinationFolder
+                }
+            }
         }
     }
 
     foreach ($s in $selected) {
         $cn = $s.ClientName.Trim()
-        $fn = $s.FolderName.Trim()
+        $src = $s.SourceFolderName.Trim()
+        $dst = $s.DestinationFolderName.Trim()
 
         if ($dict.ContainsKey($cn)) {
-            if ($overwrite) { $dict[$cn] = $fn }
+            if ($overwrite) {
+                $dict[$cn] = [pscustomobject]@{ SourceFolderName = $src; DestinationFolderName = $dst }
+            }
         } else {
-            $dict[$cn] = $fn
+            $dict[$cn] = [pscustomobject]@{ SourceFolderName = $src; DestinationFolderName = $dst }
         }
     }
 
-    # write out stable order
     $outRows = @()
     foreach ($k in ($dict.Keys | Sort-Object)) {
-        $outRows += [pscustomobject]@{ ClientName = $k; FolderName = $dict[$k] }
+        $v = $dict[$k]
+        $outRows += [pscustomobject]@{
+            ClientName = $k
+            SourceFolderName = $v.SourceFolderName
+            DestinationFolderName = $v.DestinationFolderName
+        }
     }
 
     $dir = Split-Path -Parent $mapPath
@@ -653,7 +715,7 @@ $xaml = @"
           </Grid.RowDefinitions>
 
           <DockPanel Grid.Row="0" Margin="0,0,0,10">
-            <TextBlock FontWeight="Bold" Text="Fix mappings (edit FolderName then append to ClientFolderMap.csv)"/>
+            <TextBlock FontWeight="Bold" Text="Fix mappings (edit SourceFolderName + DestinationFolderName, then append to ClientFolderMap.csv)"/>
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
               <CheckBox Name="chkOverwrite" Content="Overwrite existing" Margin="0,2,14,0"/>
               <Button Name="btnAppendMappings" Content="Append selected to map"/>
@@ -665,10 +727,14 @@ $xaml = @"
             <DataGrid.Columns>
               <DataGridCheckBoxColumn Header="Use" Binding="{Binding Use}" Width="60"/>
               <DataGridTextColumn Header="ClientName" Binding="{Binding ClientName}" IsReadOnly="True" Width="*"/>
-              <DataGridTextColumn Header="FolderName (edit this)" Binding="{Binding FolderName}" Width="*"/>
-              <DataGridTextColumn Header="SuggestedFolder" Binding="{Binding SuggestedFolder}" IsReadOnly="True" Width="*"/>
-              <DataGridTextColumn Header="Score" Binding="{Binding Score}" IsReadOnly="True" Width="80"/>
-              <DataGridCheckBoxColumn Header="Tie" Binding="{Binding AmbiguousTie}" IsReadOnly="True" Width="60"/>
+              <DataGridTextColumn Header="SourceFolderName (edit)" Binding="{Binding SourceFolderName}" Width="*"/>
+              <DataGridTextColumn Header="DestinationFolderName (edit)" Binding="{Binding DestinationFolderName}" Width="*"/>
+              <DataGridTextColumn Header="Suggested Source" Binding="{Binding SuggestedSourceFolder}" IsReadOnly="True" Width="*"/>
+              <DataGridTextColumn Header="Suggested Destination" Binding="{Binding SuggestedDestinationFolder}" IsReadOnly="True" Width="*"/>
+              <DataGridTextColumn Header="Src Score" Binding="{Binding SourceScore}" IsReadOnly="True" Width="80"/>
+              <DataGridTextColumn Header="Dst Score" Binding="{Binding DestinationScore}" IsReadOnly="True" Width="80"/>
+              <DataGridCheckBoxColumn Header="Src Tie" Binding="{Binding SourceTie}" IsReadOnly="True" Width="70"/>
+              <DataGridCheckBoxColumn Header="Dst Tie" Binding="{Binding DestinationTie}" IsReadOnly="True" Width="70"/>
             </DataGrid.Columns>
           </DataGrid>
 
