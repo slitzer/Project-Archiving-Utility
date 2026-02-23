@@ -6,7 +6,7 @@ It supports:
 - **Dry Run** reporting (no changes)
 - **Real Move** using `robocopy /MOVE`
 - **Skip reasons** (dest exists, missing client folder, missing job folder, ambiguous client match, etc.)
-- **Client folder mapping** (to solve “Eaton vs Eaton Electrical vs Eaton Industries” problems)
+- **Client folder mapping** (to solve “Burger King vs Burger King Ltd vs BK Industries” problems)
 - A **WPF UI** (Winutil-style vibe) with:
   - Summary cards (WouldMove / Skipped / Ambiguous / Failed)
   - Preview grids (WouldMove + Skipped)
@@ -15,7 +15,7 @@ It supports:
 
 > Designed to chew through backlog runs **after-hours / weekends** with clear reporting.
 
-## Run
+## Run in PowerShell (Elevated)
 '''
 irm "https://raw.githubusercontent.com/slitzer/Project-Archiving-Utility/main/install.ps1" | iex
 '''
@@ -26,15 +26,15 @@ irm "https://raw.githubusercontent.com/slitzer/Project-Archiving-Utility/main/in
 
 Recommended base folder:
 
-C:\TRANSFERSCRIPT
-ArchiveEngine.ps1
-ArchiveUI.ps1
-ProjectsToArchive.csv
-ClientFolderMap.csv
-Logs
-ArchiveMove-YYYYMMDD-HHMMSS.log
-WouldMove-YYYYMMDD-HHMMSS.csv
-Skipped-YYYYMMDD-HHMMSS.csv
+----C:\TRANSFERSCRIPT
+---ArchiveEngine.ps1
+---ArchiveUI.ps1
+---ProjectsToArchive.csv
+---ClientFolderMap.csv
+--Logs
+-ArchiveMove-YYYYMMDD-HHMMSS.log
+-WouldMove-YYYYMMDD-HHMMSS.csv
+-Skipped-YYYYMMDD-HHMMSS.csv
 
 
 ---
@@ -59,8 +59,8 @@ The script **uses**:
 
 ```csv
 ClientName,FolderName
-Eaton,Eaton Electrical
-Vulkan,Vulkan Limited
+Burger King,BK Ltd
+Mad Butcher,Mad Butcher Limited
 ```
 
 Use this when:
